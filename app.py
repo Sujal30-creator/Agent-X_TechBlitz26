@@ -1,54 +1,64 @@
-# app.py
 import os
 import requests
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
+from flask_cors import CORS # Ensure this is imported
 from models import db, Lead, CommunicationLog
+from ai_agent import analyze_lead
 
-# Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
+# 1. The Global CORS Fix: Allow everything for the hackathon
+CORS(app, resources={r"/*": {"origins": "*"}}) 
+
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URI')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# Initialize Database
 db.init_app(app)
 
-# Create tables before first request
 with app.app_context():
     db.create_all()
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 
-# ==========================================
-# 1. LEAD INGESTION ENDPOINT (For P2)
-# ==========================================
-@app.route('/api/lead', methods=['POST'])
+# 2. Add 'OPTIONS' to the allowed methods here:
+@app.route('/api/lead', methods=['POST', 'OPTIONS'])
 def receive_lead():
-    """Endpoint to catch leads from the React frontend or simulated webhooks."""
+    # 3. Explicitly handle the preflight check
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
+        
     data = request.json
     
     if not data or not data.get('name') or not data.get('contact_info'):
         return jsonify({'error': 'Missing required fields'}), 400
 
-    # Save to database
+    # Extract data
+    source = data.get('source', 'Website')
+    name = data.get('name')
+    contact_info = data.get('contact_info')
+    raw_data = str(data)
+
+    # 1. Trigger the AI Researcher Agent
+    ai_score, ai_summary = analyze_lead(name, contact_info, source, raw_data)
+
+    # 2. Save to database with AI insights
     new_lead = Lead(
-        source=data.get('source', 'Website'),
-        name=data.get('name'),
-        contact_info=data.get('contact_info'),
-        raw_data=str(data)
+        source=source,
+        name=name,
+        contact_info=contact_info,
+        raw_data=raw_data,
+        ai_score=ai_score,
+        ai_summary=ai_summary
     )
     db.session.add(new_lead)
     db.session.commit()
 
-    # TODO in Phase 2: Trigger OpenAI Researcher Agent here
-    # For now, we will simulate passing it to Telegram
-    
+    # 3. Notify the rep via Telegram
     send_telegram_notification(new_lead)
 
-    return jsonify({'message': 'Lead received successfully', 'lead_id': new_lead.id}), 201
-
+    return jsonify({'message': 'Lead processed and scored successfully', 'lead_id': new_lead.id}), 201
 # ==========================================
 # 2. TELEGRAM NOTIFICATION HELPER (For P1)
 # ==========================================
@@ -56,12 +66,16 @@ def send_telegram_notification(lead):
     """Sends the lead summary and Approve/Reject buttons to the rep."""
     chat_id = os.getenv('TELEGRAM_CHAT_ID')
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
+    score_emoji = "🔥" if lead.ai_score == "High" else "⚡" if lead.ai_score == "Medium" else "🧊"
     
     text = f"🚨 *New Lead Alert*\n\n" \
            f"*Name:* {lead.name}\n" \
            f"*Source:* {lead.source}\n" \
            f"*Contact:* {lead.contact_info}\n\n" \
-           f"_AI Score and Summary pending Phase 2..._"
+           f"🤖 *AI Analysis:*\n" \
+           f"*Score:* {lead.ai_score} {score_emoji}\n" \
+           f"*Summary:* _{lead.ai_summary}_"
 
     # Inline Keyboard for Approve/Reject
     reply_markup = {
