@@ -25,25 +25,34 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 # 2. Add 'OPTIONS' to the allowed methods here:
 @app.route('/api/lead', methods=['POST', 'OPTIONS'])
 def receive_lead():
-    # 3. Explicitly handle the preflight check
+
+    # Handle CORS preflight
     if request.method == 'OPTIONS':
         return jsonify({'status': 'ok'}), 200
-        
+
     data = request.json
-    
-    if not data or not data.get('name') or not data.get('contact_info'):
+
+    if not data:
+        return jsonify({'error': 'No data received'}), 400
+
+    # Extract fields from frontend payload
+    name = data.get('name')
+    contact_info = data.get('contact')  # map frontend field -> DB field
+    source = data.get('source', 'Website')
+    company = data.get('company')
+    message = data.get('message')
+
+    # Validate required fields
+    if not name or not contact_info:
         return jsonify({'error': 'Missing required fields'}), 400
 
-    # Extract data
-    source = data.get('source', 'Website')
-    name = data.get('name')
-    contact_info = data.get('contact_info')
+    # Store full payload for reference
     raw_data = str(data)
 
-    # 1. Trigger the AI Researcher Agent
+    # Trigger AI Researcher Agent
     ai_score, ai_summary = analyze_lead(name, contact_info, source, raw_data)
 
-    # 2. Save to database with AI insights
+    # Save lead
     new_lead = Lead(
         source=source,
         name=name,
@@ -52,13 +61,17 @@ def receive_lead():
         ai_score=ai_score,
         ai_summary=ai_summary
     )
+
     db.session.add(new_lead)
     db.session.commit()
 
-    # 3. Notify the rep via Telegram
+    # Notify sales rep
     send_telegram_notification(new_lead)
 
-    return jsonify({'message': 'Lead processed and scored successfully', 'lead_id': new_lead.id}), 201
+    return jsonify({
+        'message': 'Lead processed and scored successfully',
+        'lead_id': new_lead.id
+    }), 201
 # ==========================================
 # 2. TELEGRAM NOTIFICATION HELPER (For P1)
 # ==========================================
